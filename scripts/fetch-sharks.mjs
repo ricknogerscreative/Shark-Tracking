@@ -29,7 +29,7 @@ const UA =
   "SharkTrackingDashboard/1.0 (+https://github.com/ricknogerscreative/Shark-Tracking; educational, non-commercial)";
 const TIMEOUT_MS = 25_000;
 const CONCURRENCY = 6;
-const MAX_TRACK_POINTS = 400;
+const MAX_TRACK_POINTS = 300; // most recent kept per animal, keeps the snapshot lean
 
 // ---------- http ----------
 
@@ -147,7 +147,8 @@ function pingsToTrack(rows) {
         r.created ?? r.properties?.datetime ?? r.properties?.created
     );
     if (typeof lat === "number" && typeof lng === "number" && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
-      pts.push([+lat.toFixed(5), +lng.toFixed(5), ts]);
+      // 4 decimals ≈ 11 m — ample for a world map, and keeps the file small.
+      pts.push([+lat.toFixed(4), +lng.toFixed(4), ts]);
     }
   }
   pts.sort((a, b) => (a[2] ?? 0) - (b[2] ?? 0));
