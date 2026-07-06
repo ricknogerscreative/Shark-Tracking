@@ -332,6 +332,11 @@ async function verifyMap(id, bases) {
   return null;
 }
 
+// OCEARCH's Mapotic map id, confirmed at runtime (map name "Ocearch"). Kept as
+// a fast, reliable default; discovery still runs and re-verifies, so if OCEARCH
+// ever re-publishes under a new id the scraper/name-resolver will find it.
+const KNOWN_OCEARCH_MAP_ID = 3413;
+
 async function discoverMapId(bases) {
   const candidates = [];
   const add = (v) => {
@@ -339,6 +344,7 @@ async function discoverMapId(bases) {
     if (Number.isInteger(n) && n > 0 && !candidates.includes(n)) candidates.push(n);
   };
   if (process.env.MAPOTIC_MAP_ID) add(process.env.MAPOTIC_MAP_ID);
+  add(KNOWN_OCEARCH_MAP_ID);
 
   // 1. Resolve the map by name/domain/slug through Mapotic's API. Among any
   //    results, prefer entries whose name looks like OCEARCH's tracker.
@@ -398,22 +404,49 @@ async function fetchMapotic() {
   console.log(`Mapotic provider: map id ${mapId} on ${base}`);
 
   const geo = await get(`${base}/api/v1/maps/${mapId}/pois.geojson/?image=240x240`);
-  const features = geo?.features ?? [];
+  let features = geo?.features ?? [];
   if (!features.length) return null;
+
+  const probeId = features[0]?.properties?.id;
+
+  // Optional diagnostics: dump the real detail + motion JSON shapes so parsing
+  // can be matched exactly. Enable with DEBUG_SHAPES=1.
+  if (process.env.DEBUG_SHAPES) {
+    console.log("DEBUG feature.properties:", JSON.stringify(features[0]?.properties)?.slice(0, 1200));
+    const detail = await tryGet(`${base}/api/v1/maps/${mapId}/public-pois/${probeId}/`);
+    console.log("DEBUG detail keys:", detail && Object.keys(detail).join(","));
+    console.log("DEBUG detail:", JSON.stringify(detail)?.slice(0, 2500));
+    for (const url of [
+      `${base}/api/v1/maps/${mapId}/pois/${probeId}/motion/`,
+      `${base}/api/v1/maps/${mapId}/public-pois/${probeId}/motion/`,
+      `${base}/api/v1/maps/${mapId}/pois/${probeId}/motion/?limit=3`,
+      `${base}/api/v1/maps/${mapId}/pois/${probeId}/track/`,
+      `${base}/api/v1/maps/${mapId}/pois/${probeId}/history/`,
+      `${base}/api/v1/pois/${probeId}/motion/`,
+    ]) {
+      const m = await tryGet(url);
+      console.log(`DEBUG motion ${url} -> ${m ? JSON.stringify(m).slice(0, 400) : "null"}`);
+    }
+  }
+
+  const limit = Number(process.env.FETCH_LIMIT) || 0;
+  if (limit > 0) features = features.slice(0, limit);
 
   const motionCandidates = (id) => [
     `${base}/api/v1/maps/${mapId}/pois/${id}/motion/`,
     `${base}/api/v1/maps/${mapId}/public-pois/${id}/motion/`,
+    `${base}/api/v1/maps/${mapId}/pois/${id}/track/`,
+    `${base}/api/v1/pois/${id}/motion/`,
   ];
   let motionTemplate = null;
-  const probeId = features[0]?.properties?.id;
   for (const url of motionCandidates(probeId)) {
     const m = await tryGet(url);
-    if (m && pingsToTrack(Array.isArray(m) ? m : m.features ?? m.results ?? m.data ?? []).length) {
+    if (m && pingsToTrack(Array.isArray(m) ? m : m.features ?? m.results ?? m.data ?? m.motion ?? []).length) {
       motionTemplate = url.replace(`/${probeId}/`, "/{id}/");
       break;
     }
   }
+  console.log(`Mapotic motion endpoint: ${motionTemplate ?? "none (trails unavailable)"}`);
 
   return mapLimit(features, CONCURRENCY, async (f) => {
     const p = f.properties ?? {};
@@ -424,7 +457,7 @@ async function fetchMapotic() {
     let track = [];
     if (motionTemplate) {
       const motion = await tryGet(motionTemplate.replace("{id}", id));
-      if (motion) track = pingsToTrack(Array.isArray(motion) ? motion : motion.features ?? motion.results ?? motion.data ?? []);
+      if (motion) track = pingsToTrack(Array.isArray(motion) ? motion : motion.features ?? motion.results ?? motion.data ?? motion.motion ?? []);
     }
     const category = p.category?.name?.en ?? p.category?.name ?? null;
     return finalize(

@@ -6,6 +6,14 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      debug_shapes:
+        description: "Dump raw detail/motion JSON shapes"
+        type: boolean
+        default: false
+      fetch_limit:
+        description: "Cap number of animals fetched (0 = all)"
+        default: "0"
 
 permissions:
   contents: write
@@ -31,6 +39,9 @@ jobs:
       - name: Fetch latest shark data from OCEARCH/Mapotic
         id: fetch
         continue-on-error: true
+        env:
+          DEBUG_SHAPES: ${{ inputs.debug_shapes && '1' || '' }}
+          FETCH_LIMIT: ${{ inputs.fetch_limit || '0' }}
         run: node scripts/fetch-sharks.mjs --out data/sharks.json
 
       - name: Verify data exists
@@ -44,6 +55,7 @@ jobs:
           fi
 
       - name: Commit updated data
+        if: ${{ !inputs.debug_shapes && (inputs.fetch_limit == '' || inputs.fetch_limit == '0') }}
         run: |
           git config user.name "shark-data-bot"
           git config user.email "actions@users.noreply.github.com"
