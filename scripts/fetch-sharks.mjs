@@ -133,8 +133,9 @@ function pingsToTrack(rows) {
   for (const r of rows ?? []) {
     if (!r) continue;
     let lat, lng;
-    if (Array.isArray(r?.geometry?.coordinates)) {
-      [lng, lat] = r.geometry.coordinates;
+    const coords = r?.geometry?.coordinates ?? r?.point?.coordinates; // GeoJSON Point [lng,lat]
+    if (Array.isArray(coords)) {
+      [lng, lat] = coords;
     } else if (Array.isArray(r) && r.length >= 2) {
       [lat, lng] = [num(r[0]), num(r[1])];
     } else {
@@ -142,8 +143,8 @@ function pingsToTrack(rows) {
       lng = num(r.lng ?? r.lon ?? r.long ?? r.longitude ?? r.x);
     }
     const ts = toEpochMs(
-      r.datetime ?? r.date ?? r.pingTime ?? r.ping_time ?? r.timestamp ?? r.time ?? r.created ??
-        r.properties?.datetime ?? r.properties?.created
+      r.dt_move ?? r.datetime ?? r.date ?? r.pingTime ?? r.ping_time ?? r.timestamp ?? r.time ??
+        r.created ?? r.properties?.datetime ?? r.properties?.created
     );
     if (typeof lat === "number" && typeof lng === "number" && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
       pts.push([+lat.toFixed(5), +lng.toFixed(5), ts]);
@@ -265,37 +266,6 @@ async function fetchLegacy() {
 }
 
 // ---------- provider 2: Mapotic ----------
-
-const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-
-function extractAttributes(detail) {
-  const found = {};
-  const buckets = []
-    .concat(detail?.attributes_values ?? [])
-    .concat(detail?.attribute_values ?? [])
-    .concat(detail?.attributes ?? []);
-  for (const av of buckets) {
-    if (!av || typeof av !== "object") continue;
-    const name =
-      av.attribute?.name?.en ?? av.attribute?.name ?? av.name?.en ?? av.name ?? av.attribute_name;
-    let value = av.value?.en ?? av.value ?? av.choice?.name?.en ?? av.choice?.name ?? av.selected;
-    if (value && typeof value === "object") value = value.name ?? value.value ?? null;
-    if (name != null && value != null && value !== "") found[norm(name)] = String(value);
-  }
-  const pick = (...keys) => {
-    for (const k of keys) if (found[k]) return found[k];
-    return null;
-  };
-  return {
-    species: pick("species", "animaltype", "type"),
-    gender: pick("gender", "sex"),
-    length: pick("length", "totallength", "size"),
-    weight: pick("weight", "mass"),
-    stage: pick("stageoflife", "lifestage", "maturity"),
-    tagDate: pick("taggingdate", "tagdate", "datetagged", "taggeddate"),
-    tagLocation: pick("tagginglocation", "taglocation", "locationtagged"),
-  };
-}
 
 const SHARKY = /shark|ocearch|white shark|tiger shark|mako|hammerhead|marine|turtle|seal|dolphin|whale/i;
 
@@ -448,35 +418,47 @@ async function fetchMapotic() {
   }
   console.log(`Mapotic motion endpoint: ${motionTemplate ?? "none (trails unavailable)"}`);
 
+  // Everything the cards need is already in the GeoJSON feature properties
+  // (species, size, sex, image, tag location), so we skip the per-POI detail
+  // call entirely and only fetch each animal's motion history for its trail.
   return mapLimit(features, CONCURRENCY, async (f) => {
     const p = f.properties ?? {};
     const id = p.id;
     const [lng, lat] = f.geometry?.coordinates ?? [];
-    const detail = await tryGet(`${base}/api/v1/maps/${mapId}/public-pois/${id}/`);
-    const attrs = detail ? extractAttributes(detail) : {};
+
     let track = [];
     if (motionTemplate) {
       const motion = await tryGet(motionTemplate.replace("{id}", id));
-      if (motion) track = pingsToTrack(Array.isArray(motion) ? motion : motion.features ?? motion.results ?? motion.data ?? motion.motion ?? []);
+      if (motion) {
+        track = pingsToTrack(
+          Array.isArray(motion) ? motion : motion.features ?? motion.results ?? motion.data ?? motion.motion ?? []
+        );
+      }
     }
-    const category = p.category?.name?.en ?? p.category?.name ?? null;
+
+    const category = p.category_name?.en ?? p.category_name ?? null;
+    // "White Shark (Carcharodon carcharias)" -> "White Shark" for the card line.
+    const species = (p.species ?? category)?.toString().replace(/\s*\([^)]*\)\s*$/, "").trim() || null;
+
     return finalize(
       {
         id,
-        name: p.name ?? detail?.name ?? `Animal ${id}`,
+        name: p.name ?? `Animal ${id}`,
         category,
-        species: attrs.species ?? category,
-        gender: attrs.gender,
-        length: attrs.length,
-        weight: attrs.weight,
-        stage: attrs.stage,
-        tagDate: attrs.tagDate,
-        tagLocation: attrs.tagLocation,
-        image: p.image ?? detail?.image?.url ?? detail?.image ?? null,
-        description: detail?.description?.en ?? detail?.description ?? "",
+        species,
+        gender: p.gender ?? null,
+        length: p.length ?? null,
+        weight: p.weight ?? null,
+        stage: p.stage_of_life ?? null,
+        tagDate: p.tagging_date ?? null,
+        tagLocation: p.tag_location ?? null,
+        image: p.image ?? null,
+        description: p.species && category && p.species !== category ? `${p.species}` : "",
         lat: num(lat),
         lng: num(lng),
-        lastPingAt: toEpochMs(p.last_position ?? p.created ?? detail?.updated),
+        // last motion ping wins in finalize(); these are fallbacks for animals
+        // whose motion history is empty.
+        lastPingAt: toEpochMs(p.zping_datetime ?? p.last_move_datetime ?? p.last_update),
       },
       track
     );
