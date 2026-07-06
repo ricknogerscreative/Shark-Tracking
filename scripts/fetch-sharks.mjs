@@ -33,7 +33,7 @@ const MAX_TRACK_POINTS = 400;
 
 // ---------- http ----------
 
-async function get(url, { json = true, headers = {} } = {}) {
+async function get(url, { json = true, headers = {}, timeout = TIMEOUT_MS } = {}) {
   const res = await fetch(url, {
     headers: {
       "User-Agent": UA,
@@ -41,7 +41,7 @@ async function get(url, { json = true, headers = {} } = {}) {
       "X-Requested-With": "XMLHttpRequest",
       ...headers,
     },
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeout),
     redirect: "follow",
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
@@ -202,10 +202,35 @@ async function fetchLegacy() {
     if (sharksRaw) break;
   }
   if (!sharksRaw) return null;
+  const sharkId = (s) => s.id ?? s.shark_id ?? s.tagId ?? s.name;
+  const inlinePings = (s) => s.pings ?? s.pingCollection ?? s.locations ?? s.track;
   console.log(`Legacy provider: ${sharksRaw.length} animals from ${root}/tracker/ajax/filter-sharks`);
 
-  const sharks = await mapLimit(sharksRaw, CONCURRENCY, async (s) => {
-    const id = s.id ?? s.shark_id ?? s.tagId ?? s.name;
+  // Decide the ping strategy ONCE (avoid per-shark timeout storms):
+  //   - if the list already carries inline pings, use them;
+  //   - else probe get-pings variants on the first shark to find a working
+  //     template; if none answer, skip pings and use latest position only.
+  const hasInline = sharksRaw.some((s) => Array.isArray(inlinePings(s)) && inlinePings(s).length);
+  let pingTemplate = null;
+  if (!hasInline) {
+    const probeId = sharkId(sharksRaw[0]);
+    for (const build of [
+      (id) => `${root}/tracker/ajax/get-pings?shark_id=${encodeURIComponent(id)}`,
+      (id) => `${root}/tracker/ajax/getPings?shark_id=${encodeURIComponent(id)}`,
+      (id) => `${root}/tracker/ajax/filter-pings?shark_id=${encodeURIComponent(id)}`,
+    ]) {
+      const pd = await tryGet(build(probeId), { timeout: 12_000 });
+      const arr = Array.isArray(pd) ? pd : pd?.pings ?? pd?.data;
+      if (Array.isArray(arr) && arr.length) {
+        pingTemplate = build;
+        break;
+      }
+    }
+    console.log(`Legacy pings: ${hasInline ? "inline" : pingTemplate ? "per-shark endpoint" : "unavailable (positions only)"}`);
+  }
+
+  return mapLimit(sharksRaw, CONCURRENCY, async (s) => {
+    const id = sharkId(s);
     const base = {
       id,
       name: cleanText(s.name),
@@ -226,29 +251,17 @@ async function fetchLegacy() {
       pingCount: num(s.pingCount ?? s.pings_count),
     };
 
-    // Pings: inline if present, else per-shark endpoint.
     let track = [];
-    const inline = s.pings ?? s.pingCollection ?? s.locations ?? s.track;
+    const inline = inlinePings(s);
     if (Array.isArray(inline) && inline.length) {
       track = pingsToTrack(inline);
-    } else if (id != null) {
-      for (const purl of [
-        `${root}/tracker/ajax/get-pings?shark_id=${encodeURIComponent(id)}`,
-        `${root}/tracker/ajax/getPings?shark_id=${encodeURIComponent(id)}`,
-        `${root}/tracker/ajax/filter-pings?shark_id=${encodeURIComponent(id)}`,
-      ]) {
-        const pd = await tryGet(purl);
-        const arr = Array.isArray(pd) ? pd : pd?.pings ?? pd?.data;
-        if (Array.isArray(arr) && arr.length) {
-          track = pingsToTrack(arr);
-          break;
-        }
-      }
+    } else if (pingTemplate && id != null) {
+      const pd = await tryGet(pingTemplate(id), { timeout: 12_000 });
+      const arr = Array.isArray(pd) ? pd : pd?.pings ?? pd?.data;
+      if (Array.isArray(arr) && arr.length) track = pingsToTrack(arr);
     }
     return finalize(base, track);
   });
-
-  return sharks;
 }
 
 // ---------- provider 2: Mapotic ----------
