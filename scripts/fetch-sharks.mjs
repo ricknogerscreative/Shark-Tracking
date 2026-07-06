@@ -297,49 +297,96 @@ function extractAttributes(detail) {
   };
 }
 
+const SHARKY = /shark|ocearch|white shark|tiger shark|mako|hammerhead|marine|turtle|seal|dolphin|whale/i;
+
+/**
+ * Confirm a candidate map really is the OCEARCH tracker — not just any Mapotic
+ * map. We check the map's own name/domain/slug and, failing that, whether its
+ * POI categories look like tracked marine animals. This is what stops discovery
+ * from silently locking onto an unrelated public map.
+ */
 async function verifyMap(id, bases) {
   for (const base of bases) {
-    const probe = await tryGet(`${base}/api/v1/maps/${id}/pois.geojson/?limit=1`);
-    if (probe && (probe.type === "FeatureCollection" || Array.isArray(probe.features))) {
-      return { mapId: Number(id), base };
+    const detail = await tryGet(`${base}/api/v1/maps/${id}/`);
+    const nameBlob = JSON.stringify([
+      detail?.name, detail?.title, detail?.slug, detail?.domain, detail?.subdomain,
+    ]);
+    let sharky = detail && SHARKY.test(nameBlob);
+
+    const probe = await tryGet(`${base}/api/v1/maps/${id}/pois.geojson/?limit=30`);
+    const feats = probe?.features;
+    if (!Array.isArray(feats) || !feats.length) continue;
+
+    if (!sharky) {
+      const catBlob = feats
+        .map((f) => JSON.stringify(f?.properties?.category?.name ?? f?.properties?.category ?? ""))
+        .join(" ");
+      sharky = SHARKY.test(catBlob);
     }
+    if (sharky) {
+      console.log(`  verified map ${id} on ${base} (name=${detail?.name ?? "?"}, ${feats.length}+ pois)`);
+      return { mapId: Number(id), base, name: detail?.name ?? null };
+    }
+    console.log(`  rejected map ${id} on ${base} (name=${detail?.name ?? "?"}) — not marine-tracking`);
   }
   return null;
 }
 
 async function discoverMapId(bases) {
-  const candidates = new Set();
-  if (process.env.MAPOTIC_MAP_ID) candidates.add(Number(process.env.MAPOTIC_MAP_ID));
+  const candidates = [];
+  const add = (v) => {
+    const n = Number(v);
+    if (Number.isInteger(n) && n > 0 && !candidates.includes(n)) candidates.push(n);
+  };
+  if (process.env.MAPOTIC_MAP_ID) add(process.env.MAPOTIC_MAP_ID);
 
-  // 1. Ask the Mapotic API to resolve the map by its custom domain / slug.
+  // 1. Resolve the map by name/domain/slug through Mapotic's API. Among any
+  //    results, prefer entries whose name looks like OCEARCH's tracker.
   const resolvers = [
     "https://map.ocearch.org/api/v1/maps/",
     "https://www.mapotic.com/api/v1/maps/?domain=map.ocearch.org",
-    "https://www.mapotic.com/api/v1/maps/?slug=ocearch",
-    "https://www.mapotic.com/api/v1/maps/?subdomain=ocearch",
+    "https://www.mapotic.com/api/v1/maps/?search=ocearch",
+    "https://www.mapotic.com/api/v1/maps/?query=ocearch",
+    "https://www.mapotic.com/api/v1/public-maps/?search=ocearch",
   ];
+  const named = [];
   for (const url of resolvers) {
     const data = await tryGet(url);
     const rows = Array.isArray(data) ? data : data?.results ?? data?.maps ?? (data?.id ? [data] : []);
-    for (const r of rows) if (r?.id) candidates.add(Number(r.id));
+    for (const r of rows ?? []) {
+      if (!r?.id) continue;
+      add(r.id);
+      if (SHARKY.test(JSON.stringify([r.name, r.title, r.slug, r.domain]))) named.unshift(Number(r.id));
+    }
   }
 
-  // 2. Scrape the tracker HTML for an embedded map id.
-  for (const url of ["https://map.ocearch.org/", "https://www.mapotic.com/ocearch"]) {
-    const html = await tryGet(url, { json: false });
+  // 2. Scan the tracker HTML *and any JS bundles it references* for the id —
+  //    the SPA bakes its map id into the built JavaScript, not the raw HTML.
+  for (const page of ["https://map.ocearch.org/", "https://www.mapotic.com/ocearch"]) {
+    const html = await tryGet(page, { json: false });
     if (!html) continue;
-    for (const m of html.matchAll(/maps\/(\d{2,7})\//g)) candidates.add(Number(m[1]));
-    for (const m of html.matchAll(/["']map[_-]?id["']\s*[:=]\s*["']?(\d{2,7})/gi)) candidates.add(Number(m[1]));
+    const scan = (text) => {
+      for (const m of text.matchAll(/maps\/(\d{2,7})\//g)) add(m[1]);
+      for (const m of text.matchAll(/["']?map[_-]?id["']?\s*[:=]\s*["']?(\d{2,7})/gi)) add(m[1]);
+    };
+    scan(html);
+    const scripts = [...html.matchAll(/<script[^>]+src=["']([^"']+\.js[^"']*)["']/gi)].map((m) => m[1]);
+    for (const src of scripts.slice(0, 8)) {
+      const abs = src.startsWith("http") ? src : new URL(src, page).href;
+      const js = await tryGet(abs, { json: false, timeout: 12_000 });
+      if (js) scan(js);
+    }
   }
 
-  // 3. Documented example id as a last-resort candidate (verified below either way).
-  candidates.add(2941);
-
-  for (const id of candidates) {
+  // Try name-matched candidates first, then the rest — each is verified as
+  // genuinely marine before being accepted, so order is just an optimization.
+  const ordered = [...new Set([...named, ...candidates])];
+  console.log(`Mapotic discovery: candidate ids [${ordered.join(", ") || "none"}]`);
+  for (const id of ordered) {
     const ok = await verifyMap(id, bases);
     if (ok) return ok;
   }
-  console.log(`Mapotic discovery: no verified id among {${[...candidates].join(", ")}}`);
+  console.log("Mapotic discovery: no candidate verified as an OCEARCH/marine map");
   return null;
 }
 
