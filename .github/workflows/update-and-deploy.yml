@@ -1,0 +1,72 @@
+name: Update shark data & deploy
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # refresh tracking data every 30 minutes
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: shark-update
+  cancel-in-progress: false
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Fetch latest shark data from OCEARCH/Mapotic
+        id: fetch
+        continue-on-error: true
+        run: node scripts/fetch-sharks.mjs --out data/sharks.json
+
+      - name: Verify data exists
+        run: |
+          if [ ! -s data/sharks.json ]; then
+            echo "::error::No shark data available (fetch failed and no previous snapshot)"
+            exit 1
+          fi
+          if [ "${{ steps.fetch.outcome }}" = "failure" ]; then
+            echo "::warning::Fetch failed — deploying with the previous snapshot"
+          fi
+
+      - name: Commit updated data
+        run: |
+          git config user.name "shark-data-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/sharks.json
+          if git diff --cached --quiet; then
+            echo "No data changes"
+          else
+            git commit -m "chore: update shark tracking data [skip ci]"
+            git push origin main
+          fi
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    needs: update-data
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

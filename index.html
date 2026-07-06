@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Live Shark Tracker</title>
+  <meta name="description" content="Live map of satellite-tagged sharks — data from the OCEARCH Shark Tracker." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦈</text></svg>" />
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-icon" aria-hidden="true">🦈</span>
+      <div>
+        <h1>Live Shark Tracker</h1>
+        <p class="tagline">Satellite-tagged sharks, tracked in near real time</p>
+      </div>
+    </div>
+    <div class="status">
+      <span class="live-dot" id="live-dot" aria-hidden="true"></span>
+      <span id="status-text">Loading…</span>
+    </div>
+  </header>
+
+  <div id="sample-banner" class="sample-banner" hidden>
+    Showing sample data — run the <em>Update shark data</em> GitHub Action to pull live OCEARCH data.
+  </div>
+
+  <main class="layout">
+    <aside class="sidebar" aria-label="Tracked sharks">
+      <div class="controls">
+        <input id="search" type="search" placeholder="Search name or species…" aria-label="Search sharks" />
+        <select id="sort" aria-label="Sort sharks">
+          <option value="recent">Most recent ping</option>
+          <option value="distance">Distance (30 days)</option>
+          <option value="total">Distance (all time)</option>
+          <option value="name">Name A–Z</option>
+        </select>
+      </div>
+      <p class="result-count" id="result-count"></p>
+      <div id="cards" class="cards" role="list"></div>
+    </aside>
+
+    <section class="map-wrap">
+      <div id="map" role="application" aria-label="Shark locations map"></div>
+      <div class="legend" aria-hidden="false">
+        <strong>Last ping</strong>
+        <span><i class="dot dot-fresh"></i> under 72 h</span>
+        <span><i class="dot dot-recent"></i> under 30 d</span>
+        <span><i class="dot dot-stale"></i> older</span>
+      </div>
+    </section>
+  </main>
+
+  <template id="card-template">
+    <article class="card" role="listitem" tabindex="0">
+      <div class="card-head">
+        <img class="card-img" alt="" loading="lazy" hidden />
+        <div class="card-title">
+          <h2 class="name"></h2>
+          <p class="species"></p>
+        </div>
+        <span class="ping-dot" title=""></span>
+      </div>
+      <dl class="stats">
+        <div class="stat"><dt>Last ping</dt><dd class="last-ping">—</dd></div>
+        <div class="stat"><dt>30-day travel</dt><dd class="dist-30">—</dd></div>
+        <div class="stat"><dt>Total tracked</dt><dd class="dist-total">—</dd></div>
+      </dl>
+      <p class="bio"></p>
+      <p class="meta"></p>
+    </article>
+  </template>
+
+  <footer class="credits">
+    Tracking data © <a href="https://www.ocearch.org/tracker/" target="_blank" rel="noopener">OCEARCH</a>
+    via the <a href="https://www.mapotic.com/" target="_blank" rel="noopener">Mapotic</a> public API ·
+    Not affiliated with OCEARCH · Basemap © OpenStreetMap contributors, © CARTO
+  </footer>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
